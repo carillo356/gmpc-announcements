@@ -12,21 +12,30 @@ import * as Color from '@tiptap/extension-color'
 import * as TextAlign from '@tiptap/extension-text-align'
 import * as Placeholder from '@tiptap/extension-placeholder'
 
+
 import { supabase } from '../supabase'
 
 const announcements = ref([])
 const selectedId = ref(null)
 const mode = ref('view')
 
-/* ---------------- LOAD ---------------- */
+/* ---------------- LOAD (ORDERED) ---------------- */
 async function load() {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('announcements')
     .select('*')
-    .order('date', { ascending: false })
+    .order('order_index', { ascending: true })
 
-  announcements.value = data
-  if (data.length) selectAnnouncement(data[0].id)
+  if (error) {
+    console.error('Load error:', error)
+    return
+  }
+
+  announcements.value = data || []
+
+  if (announcements.value.length > 0) {
+    selectAnnouncement(announcements.value[0].id)
+  }
 }
 
 onMounted(load)
@@ -51,6 +60,7 @@ const editor = useEditor({
     ],
   content: ''
 })
+
 /* ---------------- SELECT ---------------- */
 function selectAnnouncement(id) {
   const item = announcements.value.find(a => a.id === id)
@@ -93,24 +103,30 @@ async function save() {
       return text.slice(0, 40) || 'Untitled'
     })(),
     content: html,
-    date: new Date().toISOString()
+    ...(mode.value === 'create' && {
+      date: new Date().toISOString()
+    })
   }
 
   if (mode.value === 'create') {
-    const { data: inserted } = await supabase
+    const { data: inserted, error } = await supabase
       .from('announcements')
       .insert([data])
       .select()
+
+    if (error) return console.error(error)
 
     announcements.value.unshift(inserted[0])
     selectedId.value = inserted[0].id
   }
 
   if (mode.value === 'edit') {
-    await supabase
+    const { error } = await supabase
       .from('announcements')
       .update(data)
       .eq('id', selectedId.value)
+
+    if (error) return console.error(error)
 
     const i = announcements.value.findIndex(a => a.id === selectedId.value)
     if (i !== -1) announcements.value[i] = { ...announcements.value[i], ...data }
@@ -125,11 +141,56 @@ async function remove(id) {
   announcements.value = announcements.value.filter(a => a.id !== id)
 }
 
+/* ---------------- MOVE UP ---------------- */
+async function moveUp(id) {
+  const list = [...announcements.value]
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+
+  const index = list.findIndex(a => a.id === id)
+  if (index <= 0) return
+
+  // move item up in array
+  const item = list.splice(index, 1)[0]
+  list.splice(index - 1, 0, item)
+
+  await saveOrder(list)
+}
+
+/* ---------------- MOVE DOWN ---------------- */
+async function moveDown(id) {
+  const list = [...announcements.value]
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+
+  const index = list.findIndex(a => a.id === id)
+  if (index === -1 || index === list.length - 1) return
+
+  const item = list.splice(index, 1)[0]
+  list.splice(index + 1, 0, item)
+
+  await saveOrder(list)
+}
+
+async function saveOrder(list) {
+  const updates = list.map((item, i) =>
+    supabase
+      .from('announcements')
+      .update({ order_index: i })
+      .eq('id', item.id)
+  )
+
+  await Promise.all(updates)
+
+  await load()
+}
+
 /* ---------------- COMMANDS ---------------- */
 function cmd(action, options) {
   const chain = editor.value?.chain().focus()
   if (!chain) return
-  options ? chain[action](options).run() : chain[action]().run()
+
+  options !== undefined
+    ? chain[action](options).run()
+    : chain[action]().run()
 }
 
 function setLink() {
@@ -148,7 +209,7 @@ function addImage() {
 <template>
 <div class="cms">
 
-  <!-- LEFT PANEL -->
+  <!-- LEFT -->
   <div class="sidebar">
     <button @click="newAnnouncement" class="btn-new">+ New</button>
 
@@ -160,13 +221,16 @@ function addImage() {
       <small>{{ new Date(a.date).toLocaleString() }}</small>
 
       <div class="actions">
+        <button @click="moveUp(a.id)">⬆</button>
+        <button @click="moveDown(a.id)">⬇</button>
+
         <button @click="editAnnouncement(a.id)">Edit</button>
         <button @click="remove(a.id)">Delete</button>
       </div>
     </div>
   </div>
 
-  <!-- RIGHT PANEL -->
+  <!-- RIGHT -->
   <div class="content">
 
     <!-- VIEW -->
@@ -179,9 +243,7 @@ function addImage() {
     <!-- EDITOR -->
     <div v-else>
 
-      <!-- FULL TOOLBAR (RESTORED) -->
       <div class="toolbar">
-
         <button @click="cmd('toggleBold')"><b>B</b></button>
         <button @click="cmd('toggleItalic')"><i>I</i></button>
         <button @click="cmd('toggleUnderline')">U</button>
@@ -203,7 +265,6 @@ function addImage() {
 
         <button @click="cmd('undo')">↩</button>
         <button @click="cmd('redo')">↪</button>
-
       </div>
 
       <div class="editor">
@@ -213,34 +274,17 @@ function addImage() {
       <button class="save" @click="save">💾 Save</button>
 
     </div>
-
   </div>
 
 </div>
 </template>
 
 <style>
-.cms {
-  display:flex;
-  height:100vh;
-  font-family:Arial;
-}
+.cms { display:flex; height:100vh; font-family:Arial; }
+.sidebar { width:280px; border-right:1px solid #ddd; padding:15px; }
+.content { flex:1; padding:20px; }
 
-.sidebar {
-  width:280px;
-  border-right:1px solid #ddd;
-  padding:15px;
-}
-
-.content {
-  flex:1;
-  padding:20px;
-}
-
-.btn-new {
-  width:100%;
-  margin-bottom:10px;
-}
+.btn-new { width:100%; margin-bottom:10px; }
 
 .item {
   padding:10px;
@@ -249,14 +293,9 @@ function addImage() {
   border-radius:6px;
 }
 
-.title {
-  cursor:pointer;
-  font-weight:bold;
-}
+.title { cursor:pointer; font-weight:bold; }
 
-.actions button {
-  margin-right:5px;
-}
+.actions button { margin-right:5px; }
 
 .toolbar {
   border:1px solid #ccc;

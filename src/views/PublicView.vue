@@ -10,7 +10,7 @@ async function load() {
   const { data, error } = await supabase
     .from('announcements')
     .select('*')
-    .order('date', { ascending: false })
+    .order('order_index', { ascending: true })
 
   if (error) {
     console.error('Supabase error:', error)
