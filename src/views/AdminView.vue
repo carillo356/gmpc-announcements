@@ -82,7 +82,16 @@ async function save() {
   const html = editor.value.getHTML()
 
   const data = {
-    title: html.replace(/<[^>]*>/g, '').slice(0, 30) || 'Untitled',
+    title: (() => {
+      const text = html
+        .replace(/<\/p>/gi, ' ')
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/<[^>]*>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      return text.slice(0, 40) || 'Untitled'
+    })(),
     content: html,
     date: new Date().toISOString()
   }
